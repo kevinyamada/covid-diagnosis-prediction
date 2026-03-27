@@ -1,0 +1,735 @@
+---
+title: "1. Comparison of Practical Prediction Model Vs Full Accuracy Prediction Model—Using COVID-19 Patient Symptoms & Diagnosis Data set—in real-world environments"
+format: pdf
+editor: visual
+date: "2026-03-22"
+author:
+  - "Eric Zhu student, ID: 1010691627"
+  - "Kevin Yamada student, ID: 1009999469"
+  - "Sage Deng, student ID: 1010379653"
+---
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+#install.packages("tidyverse")
+#install.packages("caret")
+#install.packages("randomForest")
+#install.packages("pROC")
+#install.packages("readr")
+#install.packages("dplyr")
+#install.packages("glmnet")
+
+library(tidyverse)
+library(pROC)
+library(readr)
+library(dplyr)
+library(glmnet)
+library(caret)
+library(randomForest)
+
+#Load the data
+train <- read_csv("C:/Users/sage3/Downloads/covid-19-patient-diagnosis-based-on-symtoms/train.csv")
+test <- read_csv("C:/Users/sage3/Downloads/covid-19-patient-diagnosis-based-on-symtoms/test.csv")
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+#Impute Missing Data 
+preProcess_missingdata <- preProcess(train, method = "medianImpute")
+train_clean <- predict(preProcess_missingdata, train)
+
+#Noise Detection (Removing Flipped Labels) 
+set.seed(123)
+noise_detector <- randomForest(as.factor(covid_result) ~ ., data = train_clean, ntree = 100)
+oob_preds <- predict(noise_detector, type = "prob")
+
+flagged_data <- train_clean %>%
+  mutate(
+    prob_positive = oob_preds[, "1"],
+    is_suspicious = case_when(
+      covid_result == 1 & prob_positive < 0.1 ~ TRUE, 
+      covid_result == 0 & prob_positive > 0.9 ~ TRUE, 
+      TRUE ~ FALSE
+    )
+  )
+
+train_final <- flagged_data %>% filter(!is_suspicious) %>% select(-prob_positive, -is_suspicious)
+rm(train_clean, oob_preds, flagged_data, preProcess_missingdata, noise_detector)
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+symptom_cols <- c("fever","dry_cough","sore_throat","fatigue","headache",
+                  "shortness_of_breath","loss_of_smell","loss_of_taste","chest_pain")
+
+make_features <- function(df) {
+  df %>%
+    mutate(
+      symptom_count = rowSums(across(all_of(symptom_cols))),
+      respiratory_count = dry_cough + shortness_of_breath + chest_pain + sore_throat,
+      neuro_count = loss_of_smell + loss_of_taste + headache + fatigue,
+      severe_symptom_count = shortness_of_breath + loss_of_smell + loss_of_taste + chest_pain,
+      temp_high_37_0 = as.integer(body_temperature >= 37.0),
+      temp_high_37_2 = as.integer(body_temperature >= 37.2),
+      temp_high_37_5 = as.integer(body_temperature >= 37.5),
+      temp_high_37_8 = as.integer(body_temperature >= 37.8),
+      temp_high_38_0 = as.integer(body_temperature >= 38.0),
+      temp_high_38_2 = as.integer(body_temperature >= 38.2),
+      temp_high_38_5 = as.integer(body_temperature >= 38.5),
+      temp_high_39_0 = as.integer(body_temperature >= 39.0),
+      age_under_18 = as.integer(age < 18),
+      age_18_30 = as.integer(age >= 18 & age < 30),
+      age_30_50 = as.integer(age >= 30 & age < 50),
+      age_50_65 = as.integer(age >= 50 & age < 65),
+      age_65_plus = as.integer(age >= 65),
+      age2 = age^2,
+      temp2 = body_temperature^2,
+      fever_cough = fever * dry_cough,
+      fever_smell = fever * loss_of_smell,
+      fever_taste = fever * loss_of_taste,
+      fever_breath = fever * shortness_of_breath,
+      cough_breath = dry_cough * shortness_of_breath,
+      cough_chest = dry_cough * chest_pain,
+      cough_fatigue = dry_cough * fatigue,
+      smell_taste = loss_of_smell * loss_of_taste,
+      smell_breath = loss_of_smell * shortness_of_breath,
+      taste_breath = loss_of_taste * shortness_of_breath,
+      breath_chest = shortness_of_breath * chest_pain,
+      headache_fatigue = headache * fatigue,
+      high_temp_fever = temp_high_38_0 * fever,
+      high_temp_cough = temp_high_38_0 * dry_cough,
+      high_temp_smell = temp_high_38_0 * loss_of_smell,
+      high_temp_breath = temp_high_38_0 * shortness_of_breath,
+      age_temp = age * body_temperature,
+    )
+}
+
+train_features <- make_features(train_final)
+test_features <- make_features(test)
+
+# Select only practical base columns + generated features
+cols_to_keep <- c("age", "gender", "body_temperature", symptom_cols, 
+                  "symptom_count", "respiratory_count", "neuro_count", "severe_symptom_count",
+                  "temp_high_37_0",
+                  "temp_high_37_2",
+                  "temp_high_37_5" ,
+                  "temp_high_37_8" ,
+                  "temp_high_38_0",
+                  "temp_high_38_2",
+                  "temp_high_38_5",
+                  "temp_high_39_0",
+                  "age_under_18",
+                  "age_18_30",
+                  "age_30_50",
+                  "age_50_65",
+                  "age_65_plus",
+                  "age2" ,
+                  "temp2",
+                  "fever_cough",
+                  "fever_smell",
+                  "fever_taste" ,
+                  "fever_breath" ,
+                  "cough_breath",
+                  "cough_chest" ,
+                  "cough_fatigue" ,
+                  "smell_taste" ,
+                  "smell_breath" ,
+                  "taste_breath" ,
+                  "breath_chest" ,
+                  "headache_fatigue" ,
+                  "high_temp_fever",
+                  "high_temp_cough",
+                  "high_temp_smell",
+                  "high_temp_breath",
+                  "age_temp")
+
+x_train_df <- train_features %>% select(all_of(cols_to_keep))
+x_test_df <- test_features %>% select(all_of(cols_to_keep))
+
+combined <- bind_rows(x_train_df, x_test_df)
+combined$gender <- factor(combined$gender)
+x_all <- model.matrix(~ . - 1, data = combined)
+x_train <- x_all[1:nrow(train_features), ]
+x_test <- x_all[(nrow(train_features) + 1):nrow(x_all), ]
+y <- train_features$covid_result
+
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(42)
+cv_lasso <- cv.glmnet(
+  x_train, y, 
+  family = "binomial", 
+  alpha = 1, 
+  nfolds = 10, 
+  type.measure = "auc",
+  standardize = TRUE,
+  keep = TRUE
+)
+```
+
+**2.1 Problem Statement**
+
+The objective of this report is to develop a predictive statistical model capable of classifying a patient's COVID-19 infection status based on a synthetic dataset of patient symptoms. However, a realworld sub-problem this project addresses is the trade-off between absolute predictive accuracy and real-world practicality. Below, we aim to determine if a simplified, interpretable model, relying exclusively on easily observable symptoms, can serve as a viable alternative to complex, resource-heavy models that utilize all available indicators. 
+
+**2.2 Relevance and Importance**
+
+It has since become understood that in high-traffic real-world environments (populated work spaces, schools, nursing homes, etc.) preventing localized COVID-19 outbreaks requires rapid, frictionless screening (Paltiel, A David et al. 2021). While comprehensive precise models incorporating indicators like blood oxygen levels typically offer higher accuracy, they introduce operational bottlenecks, high equipment costs, low turn around rate, and potential data privacy concerns.
+
+Additionally the importance of this problem is underscored by the higher consequences of type 2 errors (false negatives) v.s type 1 errors in vulnerable populations. A false negative result in a high-risk setting allows infectious individuals to remain in the active population, potentially leading to the explosive outbreaks observed during the 2020 pandemic due to the disease's high transmission (Zarin and Lau 2020).
+
+The relevance of this study is twofold: first, it provides a statistical framework for optimizing screening thresholds in environments where the "cost" of a missed case far outweighs the "cost" of a false alarm. Second, it compares the models under referenced success criteria, concluding if the practicality of a simpler model makes it a viable alternative to a more complex model.
+
+Below, we describe how we created 2 models using the Kaggle competition dataset to reflect the scenario highlighted above. Using existing literature, we will also define thresholds for the cost benefits of each model, and explore if the practical model can serve as a viable alternative to the full model in real-world environments.
+
+**3.1 Selecting the Model**
+
+Existing literature from Huber, Markus et al. suggested that classic regression modeling techniques generally perform better in less complex datasets. Their analysis found that the classic logistic regression method performs well in datasets with 20 to 50 events per variable, whereas random forest and other modern modeling methods required \>200 events per variable to achieve stability" (Huber et al. 2023). Given our EPV of 45, a regression-based approach offers greater stability and is less prone to the performance loss that tree-based methods incur when variable counts are limited.
+
+We tested logistic regression, decision tree, and random forest while keeping Huber, Markus et al.’s findings in mind. These models were chosen because our dataset is a binary classification problem based on the data structure, which includes binary symptom indicators, numeric clinical measurements and categorical variables, making all models reasonable. After comparing their performances, we found that logistic regression and random forest performed better than decision trees. The decision tree was useful as a simple interpretable benchmark, but its predictive performance was weaker. Random forest was also a strong candidate because it can capture nonlinear patterns and interactions between predictors, and in our project it achieved a competitive final Kaggle score of 0.93573. However, logistic regression obtained the highest final score of 0.95208 and was therefore selected as the final model. In addition, logistic regression was easier to interpret, which is especially valuable in a medical prediction setting.
+
+**3.2 Full Accuracy Model**
+
+Our findings are broadly consistent with the study by Sanchez-Pinto et al., which showed that relative performance of regression based and tree based methods depends strongly on dataset size and events-per-variable (EPV). In the study, regression based methods performed better in smaller clinical dataset, while tree-based methods performed better in larger dataset. The report also suggested that variable selection tends to improve accuracy of logistic regression models but reduces the accuracy of random forest. In our project, logistic regression also outperformed random forest, suggesting that for a dataset of our size and complexity, a simpler regression based approach may provide stronger predictive performance.
+
+The goal of the full accuracy model is to predict a patient’s covid result outcome (positive or negative) using every bit of information available in the dataset. We built our analysis to handle intentionally flipped training data labels. When building the model, we first cleaned the data such as removing missing values in comorbidity and replacing them with “missing” so that the rows with missing information were not completely lost. Furthermore, we made sure that gender and comorbidity were treated as categorical variables, while oxygen_level and body_temperature were treated as numerical variables with bands. After the cleaning was done, we created features to help the model capture patterns that could be related to COVID diagnosis including:
+
+-   Count features such as symptom_count, respiratory_count, neuro_count, and exposure_count
+
+-   Threshold features such as temp_high_38_0 or oxygen_low_95, which convert numeric measurements into yes or no indicators
+
+-   Squared terms such as age2, oxygen2, and temp2, for non linear effects
+
+-   Interaction terms such as fever_cough, cough_breath, smell_taste, contact_fever, and oxygen_breath, to capture combinations of symptoms or exposures 
+
+-   Combined severity features such as severe_combo, symptom_x_exposure, and symptom_x_oxygen
+
+These variables were created to help with prediction in regards to detecting the relationship between symptoms and diagnosis for the model. Next, we prepared the data for modeling by combining the training and test data and converting the categorical variables into indicators so that they had the same model.matrix(). For the algorithm itself, we used a regularized logistic regression model from the glmnet package on R using family = “binomial”. The glmnet version was used because we made many engineered variables and the regularization helps minimize overfitting by shrinking any non significant coefficients. We also set alpha to 0.9 which means that the model is very similar to a lasso penalty but still contains a small ridge effect. This is because our engineered features are often correlated and since we have many of them, it is important to keep the lasso penalty since it allows the model to use the most significant predictors while reducing noise from the less significant ones.
+
+For handling the suspicious labels, we trained the baseline glmnet models using 5 fold cross validation under many random fold assignments to give us out of fold predicted probability for every training row. Then, we would see if a row repeatedly looked like it belonged to the opposite label and treated that row as suspicious. If a row was labeled 0 but the model repeatedly assigned it a high probability of being 1, it was flagged suspicious and if it was labeled 1 but had a low probability of being 1 then it was also flagged a suspicious and vice versa for 0. We then tried removing and flipping the rows but we found that removing them had better performance. For the training, we used 5 fold cross validation to train and evaluate the model. We split the training data into 5 folds then trained the glmnet model on 4 folds. We then predicted the probabilities for the remaining fold and repeated it until every row had an out of fold probability. Then, we converted the probabilities into predictions using a threshold and measured prediction accuracy. Finally, we repeated this using different tuning values and suspicious label variants to get the final submission. Therefore, we had many models and variants that created a weighted blend of predictions which can improve stability because different variants may capture different patterns in the data. Our main evaluation metric was accuracy because of the Kaggle rules and it measures the proportion of correct predictions out of all predictions. This is appropriate because the goal is to maximize performance but we also created another model to consider practicality, recall, and F1. That being said, our main model also tuned the classification threshold so instead of always using 0.5, we could maximize accuracy if it was not exactly 0.5 which was often the case due to the suspicious labels.
+
+**3.3 Practical Model**
+
+Unlike the Full Accuracy Model, the ‘practical model’ utilizes a constrained feature set restricted to "easily” observable indicators: age, gender, body temperature, and nine primary symptoms. This specific subset selection was driven by the operational requirement for rapid, non-invasive screening. While the ‘Full Model’ prioritizes the inclusion of clinical variables like blood oxygen levels to maximize predictive power, the practical model intentionally excludes them to simulate resource-limited environments.
+
+Preprocessing remained consistent with Section 3.1—utilizing median imputation and out-of-bag (OOB) noise detection—ensuring the model was trained on a high-quality, filtered dataset free from the intentionally flipped labels. Feature engineering followed steps similarly along the full accuracy model, trying to include more complex non-linear variables to capture complex trends.
+
+The choice of a regression-based method over tree-based ensembles (like Random Forest) for this specific problem was again, further justified by the dataset's Events Per Variable (EPV) ratio, which is approximately 45. While the Full Model utilized a mixed Elastic Net penalty (alpha=0.9), the Practical Model employed a pure Lasso penalty (alpha=1). This choice is grounded in the bias-variance tradeoff supported by the lack of complex terms present in the full accuracy model. By forcing the simpler non-significant symptom coefficients to zero, Lasso performs automatic feature selection, which can maintain the interpretability of the model, useful for real-world scenarios of identifying notable symptoms of the virus.
+
+Training was conducted via 10-fold Cross-Validation (CV). Unlike the Full Model, which is optimized for Accuracy, the Practical Model’s CV process optimized for the Area Under the ROC Curve (AUC). This ensures maximum class separation, enabling subsequent threshold tuning for a more aggressive model.
+
+The evaluation of the Practical Model shifts the focus from global Accuracy to Recall (Sensitivity) and F1 Score. In the context of outbreak prevention in high-risk environments, the "cost" of a False Negative (Type II error) is significantly higher than a False Positive (Type I error). Therefore, Recall is the most appropriate primary metric as it measures the model’s ability to successfully identify all infectious individuals. To optimize this, we moved beyond the default 0.50 threshold. By evaluating a range of thresholds (0.20 to 0.70 **Table 1**), we selected an aggressive threshold of 0.34. This decision was a strategic trade-off: we accepted a decrease in Precision (increase in false alarms) to significantly boost Recall. This ensures the model functions as a "safety net" suitable for high-risk environments where infectious individuals must be identified and isolated.
+
+```{r, include=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+best_lam_idx <- which(cv_lasso$lambda == cv_lasso$lambda.min)
+oof_log_odds <- cv_lasso$fit.preval[, best_lam_idx]
+oof_probs <- 1 / (1 + exp(-oof_log_odds))
+
+thresholds <- seq(0.20, 0.70, by = 0.1)
+
+threshold_results <- data.frame(
+  Threshold = numeric(),
+  Accuracy = numeric(),
+  Precision = numeric(),
+  Recall_Sensitivity = numeric(),
+  F1_Score = numeric(),
+  Specificity = numeric()
+)
+
+for (thr in thresholds) {
+  # Generate binary predictions based on the current threshold
+  # Setting levels explicitly ensures caret doesn't crash if a threshold predicts only one class
+  temp_preds <- factor(ifelse(oof_probs >= thr, 1, 0), levels = c("0", "1"))
+  temp_y <- factor(y, levels = c("0", "1"))
+  
+  # Calculate metrics
+  cm <- suppressWarnings(confusionMatrix(temp_preds, temp_y, positive = "1"))
+  
+  # Extract the specific metrics
+  acc <- cm$overall["Accuracy"]
+  prec <- cm$byClass["Precision"]
+  rec <- cm$byClass["Recall"]
+  f1 <- cm$byClass["F1"]
+  sp <- cm$byClass["Specificity"]
+  
+  # Append the row to our results table
+  threshold_results <- rbind(threshold_results, data.frame(
+    Threshold = thr,
+    Accuracy = round(acc, 4),
+    Precision = round(prec, 4),
+    Recall_Sensitivity = round(rec, 4),
+    F1_Score = round(f1, 4),
+    Specificity = round(sp, 4)
+  ))
+}
+
+# Clean up row names and print the final table
+rownames(threshold_results) <- NULL
+print("TABLE 1 :Practical Model: Threshold Evaluation Table")
+print(threshold_results)
+```
+
+**4.1 Results**
+
+The performance of the predictive models was evaluated using out-of-fold (OOF) predictions, ensuring a robust estimation of how each model generalizes to unseen data. Three distinct modeling strategies were compared: the Full Accuracy Model (a collection of GLMs), the Default Practical Model (Lasso GLM at a 0.50 threshold), and the Aggressive Practical Model (Lasso GLM at a 0.34 threshold). The relevant metrics of each model are in **Table 2.**
+
+**Table 2: Model Metrics Table**
+
+|  |  |  |  |  |  |  |
+|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
+| **Model** | **Accuracy (OOF)** | **Precision** | **Recall (Sensitivity)** | **F1 Score** | **Specificity** | **Kaggle Score (Acc)** |
+| **Full Accuracy Model** | 0.7653 | 0.7460 | 0.8303 | 0.7859 | 0.6953 | 0.9503 |
+| **Default Practical Model** | 0.6790 | 0.6775 | 0.7293 | 0.7024 | 0.6246 | 0.7959 |
+| **Aggressive Practical Model** | 0.6400 | 0.6024 | 0.9028 | 0.7227 | 0.3557 | 0.6987 |
+
+A notable observation from **Table 2** is the significant discrepancy between the OOF Accuracy and the Kaggle scores across all models. For instance, the Full Accuracy Model achieved an OOF accuracy of 0.7653, but surged to 0.9503 on the Kaggle test set. We suspect this discrepancy is a direct result of the intentional data quality issues injected into the training dataset by the teaching team. Because the OOF metrics were evaluated against this noisy training data, the ceiling for accuracy was artificially depressed. The Kaggle test set, which likely lacks these flipped labels, allowed the underlying predictive power of our models to manifest without penalization from noise, confirming that our strategies to handle mislabeled data during training were successful.
+
+T the multi-domain Full Accuracy Model—which integrated complex clinical data (e.g., oxygen levels) with basic symptoms—achieved the highest overall predictive capacity. With an OOF Sensitivity of 0.8303, it successfully meets the FDA’s minimum 80% sensitivity requirement for rapid screening.
+
+However, restricting the feature space strictly to non-invasive, instantly observable variables resulted in a performance drop. The Default Practical Model (0.50 threshold) achieved a moderate OOF accuracy of 0.6790 but failed to meet regulatory safety standards, capturing only 72.93% of positive cases **(**Food and Drug Administration 2020).
+
+Earlier in the paper, we recognized that false negatives pose a severe risk of outbreaks among populated areas, we utilized threshold tuning to prioritize safety. The Aggressive Practical Model (0.34 threshold) successfully boosted Recall to 0.9028, ensuring that over 90% of infectious individuals are identified. This safety mechanism came at the cost of Specificity (0.3557) however, meaning the model generates a high volume of false positives, necessitating unnecessary isolation for healthy individuals.
+
+For interpretability **Table 3** displays acceptance and rejection zones of the full accuracy model based off of some predictors
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+sage_plot_df_30 <- train_features %>%
+  transmute(
+    covid_result = factor(y),
+    predicted_prob = oof_probs,
+    age = age,
+    body_temperature = body_temperature,
+    symptom_count = symptom_count,
+    severe_symptom_count = severe_symptom_count,
+    smell_taste = smell_taste,
+    fever_breath = fever_breath
+  ) %>%
+  pivot_longer(
+    cols = c(age, body_temperature, symptom_count, severe_symptom_count, smell_taste, fever_breath),
+    names_to = "variable",
+    values_to = "x_value"
+  )
+
+ggplot(sage_plot_df_30, aes(x = x_value, y = predicted_prob, color = covid_result)) +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0, ymax = 0.30, alpha = 0.12, fill = "red") +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0.30, ymax = 1, alpha = 0.12, fill = "green") +
+  geom_jitter(height = 0.02, width = 0, alpha = 0.5, size = 1.3) +
+  geom_hline(yintercept = 0.30, linetype = "dashed", linewidth = 0.8) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+  labs(
+    title = " Table 3: Practical Model: Acceptance and Rejection Zones at Threshold 0.30",
+    x = "Variable value",
+    y = "Out-of-fold predicted probability of COVID positive",
+    color = "Actual result"
+  ) +
+  theme_minimal()
+library(tidyverse)
+
+sage_plot_df_50 <- train_features %>%
+  transmute(
+    covid_result = factor(y),
+    predicted_prob = oof_probs,
+    age = age,
+    body_temperature = body_temperature,
+    symptom_count = symptom_count,
+    severe_symptom_count = severe_symptom_count,
+    smell_taste = smell_taste,
+    fever_breath = fever_breath
+  ) %>%
+  pivot_longer(
+    cols = c(age, body_temperature, symptom_count, severe_symptom_count, smell_taste, fever_breath),
+    names_to = "variable",
+    values_to = "x_value"
+  )
+
+ggplot(sage_plot_df_50, aes(x = x_value, y = predicted_prob, color = covid_result)) +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0, ymax = 0.50, alpha = 0.12, fill = "red") +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0.50, ymax = 1, alpha = 0.12, fill = "green") +
+  geom_jitter(height = 0.02, width = 0, alpha = 0.5, size = 1.3) +
+  geom_hline(yintercept = 0.50, linetype = "dashed", linewidth = 0.8) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+  labs(
+    title = "Table 4: Practical Model: Acceptance and Rejection Zones at Threshold 0.50",
+    x = "Variable value",
+    y = "Out-of-fold predicted probability of COVID positive",
+    color = "Actual result"
+  ) +
+  theme_minimal()
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+# Aggressive Threshold Prediction
+# Predict probabilities on the Kaggle test set
+#test_probs <- as.numeric(predict(cv_lasso, newx = x_test, s = "lambda.min", type = "response"))
+
+# Minimize Type II errors
+#aggressive_threshold <- 0.34
+#test_preds <- ifelse(test_probs >= aggressive_threshold, 1, 0)
+
+
+#submission <- data.frame(
+#  id = test$id,
+#  covid_result = as.integer(test_preds)
+#)
+#write_csv(submission, "C:/Users/sage3/Downloads/aggressive_practical_glm_submission.csv")
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+# Default Prediction (Max Accuracy)
+#test_probs <- as.numeric(predict(cv_lasso, newx = x_test, s = "lambda.min", type = "response"))
+
+# Standard 50% threshold
+#default_threshold <- 0.50
+#test_preds_default <- ifelse(test_probs >= default_threshold, 1, 0)
+
+#submission_default <- data.frame(
+#  id = test$id,
+#  covid_result = as.integer(test_preds_default)
+#)
+#write_csv(submission_default, "C:/Users/sage3/Downloads/practical_glm_submission.csv")
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+train <- read_csv("C:/Users/sage3/Downloads/covid-19-patient-diagnosis-based-on-symtoms/train.csv", show_col_types = FALSE)
+test <- read_csv("C:/Users/sage3/Downloads/covid-19-patient-diagnosis-based-on-symtoms/test.csv", show_col_types = FALSE)
+
+train$comorbidity[is.na(train$comorbidity)] <- "Missing"
+test$comorbidity[is.na(test$comorbidity)] <- "Missing"
+
+train$gender <- as.character(train$gender)
+test$gender <- as.character(test$gender)
+train$comorbidity <- as.character(train$comorbidity)
+test$comorbidity <- as.character(test$comorbidity)
+train$oxygen_level <- as.numeric(train$oxygen_level)
+test$oxygen_level <- as.numeric(test$oxygen_level)
+train$body_temperature <- as.numeric(train$body_temperature)
+test$body_temperature <- as.numeric(test$body_temperature)
+
+symptom_cols <- c("fever","dry_cough","sore_throat","fatigue","headache","shortness_of_breath","loss_of_smell","loss_of_taste","chest_pain")
+
+make_features <- function(df) {
+  df %>%
+    mutate(
+      symptom_count = rowSums(across(all_of(symptom_cols))),
+      respiratory_count = dry_cough + shortness_of_breath + chest_pain + sore_throat,
+      neuro_count = loss_of_smell + loss_of_taste + headache + fatigue,
+      exposure_count = contact_with_patient + travel_history,
+      severe_symptom_count = shortness_of_breath + loss_of_smell + loss_of_taste + chest_pain,
+      temp_high_37_0 = as.integer(body_temperature >= 37.0),
+      temp_high_37_2 = as.integer(body_temperature >= 37.2),
+      temp_high_37_5 = as.integer(body_temperature >= 37.5),
+      temp_high_37_8 = as.integer(body_temperature >= 37.8),
+      temp_high_38_0 = as.integer(body_temperature >= 38.0),
+      temp_high_38_2 = as.integer(body_temperature >= 38.2),
+      temp_high_38_5 = as.integer(body_temperature >= 38.5),
+      temp_high_39_0 = as.integer(body_temperature >= 39.0),
+      oxygen_low_99 = as.integer(oxygen_level < 99),
+      oxygen_low_98 = as.integer(oxygen_level < 98),
+      oxygen_low_97 = as.integer(oxygen_level < 97),
+      oxygen_low_96 = as.integer(oxygen_level < 96),
+      oxygen_low_95 = as.integer(oxygen_level < 95),
+      oxygen_low_94 = as.integer(oxygen_level < 94),
+      oxygen_low_93 = as.integer(oxygen_level < 93),
+      oxygen_low_92 = as.integer(oxygen_level < 92),
+      oxygen_low_90 = as.integer(oxygen_level < 90),
+      age_under_18 = as.integer(age < 18),
+      age_18_30 = as.integer(age >= 18 & age < 30),
+      age_30_50 = as.integer(age >= 30 & age < 50),
+      age_50_65 = as.integer(age >= 50 & age < 65),
+      age_65_plus = as.integer(age >= 65),
+      age2 = age^2,
+      oxygen2 = oxygen_level^2,
+      temp2 = body_temperature^2,
+      fever_cough = fever * dry_cough,
+      fever_smell = fever * loss_of_smell,
+      fever_taste = fever * loss_of_taste,
+      fever_breath = fever * shortness_of_breath,
+      cough_breath = dry_cough * shortness_of_breath,
+      cough_chest = dry_cough * chest_pain,
+      cough_fatigue = dry_cough * fatigue,
+      smell_taste = loss_of_smell * loss_of_taste,
+      smell_breath = loss_of_smell * shortness_of_breath,
+      taste_breath = loss_of_taste * shortness_of_breath,
+      breath_chest = shortness_of_breath * chest_pain,
+      headache_fatigue = headache * fatigue,
+      contact_travel = contact_with_patient * travel_history,
+      contact_smell = contact_with_patient * loss_of_smell,
+      contact_cough = contact_with_patient * dry_cough,
+      contact_fever = contact_with_patient * fever,
+      travel_smell = travel_history * loss_of_smell,
+      travel_cough = travel_history * dry_cough,
+      oxygen_breath = oxygen_low_95 * shortness_of_breath,
+      oxygen_chest = oxygen_low_95 * chest_pain,
+      oxygen_cough = oxygen_low_95 * dry_cough,
+      oxygen_fever = oxygen_low_95 * fever,
+      oxygen_smell = oxygen_low_95 * loss_of_smell,
+      high_temp_fever = temp_high_38_0 * fever,
+      high_temp_cough = temp_high_38_0 * dry_cough,
+      high_temp_smell = temp_high_38_0 * loss_of_smell,
+      high_temp_breath = temp_high_38_0 * shortness_of_breath,
+      infect_exposure = as.integer((contact_with_patient + travel_history) > 0),
+      severe_combo = oxygen_low_95 + shortness_of_breath + chest_pain + temp_high_38_0,
+      symptom_x_exposure = symptom_count * exposure_count,
+      symptom_x_oxygen = symptom_count * oxygen_level,
+      symptom_x_temp = symptom_count * body_temperature,
+      oxygen_temp = oxygen_level * body_temperature,
+      age_temp = age * body_temperature,
+      age_oxygen = age * oxygen_level,
+      age_symptom = age * symptom_count
+    )
+}
+
+train <- make_features(train)
+test <- make_features(test)
+
+x_train_df <- train %>% select(-id, -covid_result)
+x_test_df <- test %>% select(-id)
+
+combined <- bind_rows(x_train_df, x_test_df)
+combined$gender <- factor(combined$gender)
+combined$comorbidity <- factor(combined$comorbidity)
+
+x_all <- model.matrix(~ . - 1, data = combined)
+x_train <- x_all[1:nrow(train), ]
+x_test <- x_all[(nrow(train) + 1):(nrow(train) + nrow(test)), ]
+y <- train$covid_result
+
+get_fold_id <- function(n, seed) {
+  set.seed(seed)
+  sample(rep(1:5, length.out = n))
+}
+
+get_oof <- function(x_full, y_train, keep_idx, alpha, lambda, seed) {
+  fold_id <- get_fold_id(nrow(x_full), seed)
+  oof <- rep(NA_real_, nrow(x_full))
+  for (k in 1:5) {
+    tr <- which(fold_id != k & keep_idx)
+    va <- which(fold_id == k)
+    fit <- glmnet(
+      x_full[tr, ],
+      y_train[tr],
+      family = "binomial",
+      alpha = alpha,
+      lambda = lambda,
+      standardize = TRUE
+    )
+    oof[va] <- as.numeric(predict(fit, newx = x_full[va, ], type = "response"))
+  }
+  oof
+}
+
+alpha <- 0.9
+lambda_base <- 0.0124898
+lambda_grid <- seq(0.0105, 0.0145, length.out = 16)
+threshold_grid <- seq(0.43, 0.48, by = 0.002)
+seeds <- c(42, 77, 123)
+
+base_oof_mat <- matrix(NA_real_, nrow = nrow(x_train), ncol = length(seeds))
+for (i in seq_along(seeds)) {
+  base_oof_mat[, i] <- get_oof(x_train, y, rep(TRUE, length(y)), alpha, lambda_base, seeds[i])
+}
+
+sus_pos_90 <- rowSums(base_oof_mat >= 0.90)
+sus_pos_93 <- rowSums(base_oof_mat >= 0.93)
+sus_pos_95 <- rowSums(base_oof_mat >= 0.95)
+sus_neg_10 <- rowSums(base_oof_mat <= 0.10)
+sus_neg_07 <- rowSums(base_oof_mat <= 0.07)
+sus_neg_05 <- rowSums(base_oof_mat <= 0.05)
+
+variant_defs <- list(
+  remove_90_5 = list(keep = !((y == 0 & sus_pos_90 >= 2) | (y == 1 & sus_neg_10 >= 2)), ytrain = y),
+  remove_93_4 = list(keep = !((y == 0 & sus_pos_93 >= 2) | (y == 1 & sus_neg_07 >= 2)), ytrain = y),
+  remove_95_3 = list(keep = !((y == 0 & sus_pos_95 >= 2) | (y == 1 & sus_neg_05 >= 2)), ytrain = y),
+  flip_95_3 = list(
+    keep = rep(TRUE, length(y)),
+    ytrain = ifelse((y == 0 & sus_pos_95 >= 2), 1, ifelse((y == 1 & sus_neg_05 >= 2), 0, y))
+  )
+)
+
+variant_results <- list()
+
+for (nm in names(variant_defs)) {
+  best_acc <- -Inf
+  best_lambda <- NA
+  best_threshold <- NA
+  best_oof <- NULL
+  
+  for (lam in lambda_grid) {
+    oof_mat <- matrix(NA_real_, nrow = nrow(x_train), ncol = length(seeds))
+    for (i in seq_along(seeds)) {
+      oof_mat[, i] <- get_oof(x_train, variant_defs[[nm]]$ytrain, variant_defs[[nm]]$keep, alpha, lam, seeds[i])
+    }
+    oof_mean <- rowMeans(oof_mat)
+    for (thr in threshold_grid) {
+      acc <- mean(ifelse(oof_mean >= thr, 1, 0) == y)
+      if (acc > best_acc) {
+        best_acc <- acc
+        best_lambda <- lam
+        best_threshold <- thr
+        best_oof <- oof_mean
+      }
+    }
+  }
+  
+  variant_results[[nm]] <- list(
+    keep = variant_defs[[nm]]$keep,
+    ytrain = variant_defs[[nm]]$ytrain,
+    lambda = best_lambda,
+    threshold = best_threshold,
+    acc = best_acc,
+    oof = best_oof
+  )
+}
+
+top_names <- c("remove_90_5", "remove_93_4", "remove_95_3", "flip_95_3")
+
+weight_grid <- list(
+  c(0.45, 0.25, 0.20, 0.10),
+  c(0.40, 0.30, 0.20, 0.10),
+  c(0.35, 0.30, 0.20, 0.15),
+  c(0.50, 0.20, 0.20, 0.10)
+)
+
+best_blend_acc <- -Inf
+best_weights <- NULL
+best_blend_threshold <- NA
+
+for (w in weight_grid) {
+  blend_oof <- rep(0, nrow(x_train))
+  for (i in seq_along(top_names)) {
+    blend_oof <- blend_oof + w[i] * variant_results[[top_names[i]]]$oof
+  }
+  for (thr in seq(0.43, 0.48, by = 0.002)) {
+    acc <- mean(ifelse(blend_oof >= thr, 1, 0) == y)
+    if (acc > best_blend_acc) {
+      best_blend_acc <- acc
+      best_weights <- w
+      best_blend_threshold <- thr
+    }
+  }
+}
+
+fit_test_variant <- function(x_full, y_train, keep_idx, lambda, seed) {
+  fold_id <- get_fold_id(nrow(x_full), seed)
+  test_probs <- rep(0, nrow(x_test))
+  for (k in 1:5) {
+    tr <- which(fold_id != k & keep_idx)
+    fit <- glmnet(
+      x_full[tr, ],
+      y_train[tr],
+      family = "binomial",
+      alpha = alpha,
+      lambda = lambda,
+      standardize = TRUE
+    )
+    test_probs <- test_probs + as.numeric(predict(fit, newx = x_test, type = "response")) / 5
+  }
+  test_probs
+}
+
+variant_test_probs <- list()
+for (nm in top_names) {
+  probs_mat <- matrix(0, nrow = nrow(x_test), ncol = length(seeds))
+  for (i in seq_along(seeds)) {
+    probs_mat[, i] <- fit_test_variant(
+      x_train,
+      variant_results[[nm]]$ytrain,
+      variant_results[[nm]]$keep,
+      variant_results[[nm]]$lambda,
+      seeds[i]
+    )
+  }
+  variant_test_probs[[nm]] <- rowMeans(probs_mat)
+}
+
+blend_test_probs <- rep(0, nrow(x_test))
+for (i in seq_along(top_names)) {
+  blend_test_probs <- blend_test_probs + best_weights[i] * variant_test_probs[[top_names[i]]]
+}
+
+submission <- data.frame(
+  id = test$id,
+  covid_result = as.integer(ifelse(blend_test_probs >= best_blend_threshold, 1, 0))
+)
+
+#write_csv(submission, "C:/Users/sage3/Downloads/submission.csv")
+```
+
+```{r, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+# Evaluate Full Accuracy Model
+#|echo: false
+full_preds <- ifelse(blend_oof >= best_blend_threshold, 1, 0)
+full_metrics <- confusionMatrix(as.factor(full_preds), as.factor(y), positive = "1")
+
+evaluation_summary <- data.frame(
+  Full_Accuracy_Model = c(round(full_metrics$overall["Accuracy"],4), 
+                          round(full_metrics$byClass["Precision"],4), 
+                          round(full_metrics$byClass["Recall"],4), 
+                          round(full_metrics$byClass["F1"],4),
+                          round(full_metrics$byClass["Specificity"],4)
+  )
+)
+
+#print(evaluation_summary)
+```
+
+```{r, include=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+blend_oof <- rep(0, nrow(x_train))
+for (i in seq_along(top_names)) {
+  blend_oof <- blend_oof + best_weights[i] * variant_results[[top_names[i]]]$oof
+}
+
+kevin_plot_df <- train %>%
+  transmute(
+    covid_result = factor(covid_result),
+    predicted_prob = blend_oof,
+    symptom_count = symptom_count,
+    oxygen_level = oxygen_level,
+    body_temperature = body_temperature,
+    exposure_count = exposure_count,
+    severe_combo = severe_combo,
+    smell_taste = smell_taste
+  ) %>%
+  pivot_longer(
+    cols = c(symptom_count, oxygen_level, body_temperature, exposure_count, severe_combo, smell_taste),
+    names_to = "variable",
+    values_to = "x_value"
+  )
+
+ggplot(kevin_plot_df, aes(x = x_value, y = predicted_prob, color = covid_result)) +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0, ymax = best_blend_threshold, alpha = 0.12, fill = "red") +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = best_blend_threshold, ymax = 1, alpha = 0.12, fill = "green") +
+  geom_jitter(height = 0.02, width = 0, alpha = 0.5, size = 1.3) +
+  geom_hline(yintercept = best_blend_threshold, linetype = "dashed", linewidth = 0.8) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+  labs(
+    title = "Table 3: Full Model: Acceptance and Rejection Zones",
+    x = "Variable value",
+    y = "Predicted probability of COVID positive",
+    color = "Actual result"
+  ) +
+  theme_minimal()
+```
+
+**4.2 Conclusions**
+
+Based on the evaluation metrics and supporting literature, the symptom-based practical models do not serve as a viable, standalone alternative to the Full Accuracy model. Despite threshold tuning, the practical models fail to meet the stringent reliability marks recommended by the Food and Drug Administration (FDA) for pure diagnostic reliance. Specifically, the FDA dictates that rapid screening tools must achieve 80% sensitivity and 97% specificity (Food and Drug Administration 2020). While our Aggressive Practical Model achieved an excellent sensitivity (0.9028), its severely compromised specificity (0.3557) means it generates too many false positives to be used for concrete, independent medical decisions. Conversely, the Full Accuracy Model strikes a much safer and more robust balance between sensitivity (0.8303) and specificity (0.6953). This allows the Full Accuracy model to serve as a highly reliable predictor of true COVID-19 outcomes.
+
+Instead of replacing the Full Accuracy model, we suggest the practical model is best utilized in a rapid screening or triage capacity. In high-traffic, real-world environments (such as nursing homes or packed classrooms), the practical model should not be used to make concrete isolation decisions. Rather, it should be deployed to rapidly flag potentially infectious patients based on easily observable symptoms. Once flagged by the practical model, these specific high-risk individuals can then be directed toward further, definitive testing using more complex and accurate methods. With the model’s extremely high sensitivity, it is unlikely to miss positive cases of carriers. Implementing this two-tiered approach drastically lowers the overall economic burden and logistical strain of mass screening. By using the practical model to filter out clearly negative cases, institutions can significantly reduce the sheer volume of untimely, complicated clinical tests required, ultimately lowering healthcare costs and drastically improving test turnaround rates for the patients who truly need them.
+
+**5. Limitations**
+
+Our results show that the two models serve different purposes rather than acting as direct substitutes for one another. The full accuracy model achieved the strongest overall performance, with an OOF accuracy of 0.7653, recall of 0.8303, specificity of 0.6953, and a Kaggle score of 0.9503, indicating a more balanced prediction framework when both symptom and clinical variables were included. In contrast, the practical model, which was restricted to age, gender, body temperature, and nine easily observable symptoms, showed weaker overall discrimination. At the default 0.50 threshold, its OOF accuracy was 0.6790 and recall was only 0.7293, which was below the FDA’s 80% sensitivity benchmark for rapid screening tools. After lowering the threshold to 0.34, recall increased substantially to 0.9028, but specificity dropped sharply to 0.3557. This confirms our main conclusion that the symptom-based Practical Model may be useful as a first stage screening tool, but it is not a strong standalone replacement for the full accuracy model.
+
+Additionally, these two models were evaluated under partly different performance goals. The full accuracy model was developed to maximize overall predictive accuracy under Kaggle setting, while the practical model was intentionally set to prioritize recall and F1 score in high risk screening settings. For example, the practical model used a threshold of 0.34 to reduce false negatives even at a cost of a large increase in false possitives. In consequence, these models were not compared within a single framework, and the interpretation of best performance depends on whether the objective is ranking accuracy or real world epidemic control. Direction for future research would be to evaluate these two models within the same cost sensitive framework based on real world situations.
+
+A second limitation is the quality of the training labels. In our results, there was a very large gap between OOF accuracy and Kaggle accuracy across all models. The clearest example is the full accuracy model, whose OOF accuracy was 0.7653 but reached a Kaggle score of 0.9503. This suggests that the intentionally flipped labels in the training data likely depressed the OOF performance. Although our suspicious label filtering and noise handling strategy improved the final results, mislabeled observations may still have remained in the training pipeline. Furhter research could test more systematic methods for correcting label noise and compare the robustness of different models under various assumptions.
+
+Finally, although we did include some forms of feature selection and tuning, we did not systematically compare reduced features under a settled evaluation framework. In particular, the practical model used Lasso regularization, which automatically shrinks less useful coefficients toward zero, and the full model also used penalized logistic regression to reduce noise from weaker engineered predictors. However, we did not formally test whether similar recall, specificity, or F1 score could be achieved with fewer predictors. Future work could compare more versions of both models to determine whether similar predictive performance can be maintained with greater simplicity and interpretability.
+
+Overall, the main implication of this project is that model usefulness depends on context. The full accuracy model is more appropriate when balance between sensitivity and specificity is required, whereas the practical model is better viewed as a tool in high traffic settings where missing infectious individuals is more costly.
+
+**References**
+
+1.  Food and Drug Administration (FDA). Minimum Performance Requirements for COVID-19 Test Kits Used for SARS-CoV-2 Infection. FDA Memorandum No. 2021-009, 2021. Mar. 2020, [www.fda.gov.ph/fda-memorandum-no-2021-009-minimum-performance-requirements-for-covid-19-test-kits-used-for-sars-cov-2-infection/](https://www.fda.gov.ph/fda-memorandum-no-2021-009-minimum-performance-requirements-for-covid-19-test-kits-used-for-sars-cov-2-infection/)
+
+2.  Huber, Markus et al. “Decision curve analysis confirms higher clinical utility of multi-domain versus single-domain prediction models in patients with open abdomen treatment for peritonitis.” BMC medical informatics and decision making vol. 23,1 63. 6 Apr. 2023, doi:10.1186/s12911-023-02156-w
+
+3.  Zarin, Deborah A., and Joseph Lau. "Diagnostic Testing for COVID-19: Considering False Positive and False Negative Results." Multi-Regional Clinical Trials Center, 2020. <https://mrctcenter.org/wp-content/uploads/2023/04/zarin-lau-interpreting-dx-tests-for-COVID.pdf>
