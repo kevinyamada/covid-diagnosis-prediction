@@ -20,7 +20,7 @@ We evaluated multiple models, including logistic regression, decision trees, and
   - threshold indicators
   - nonlinear terms
   - interaction terms
-- 5-fold cross-validation
+- 5 fold cross-validation
 - Threshold tuning for screening performance
 
 ## Key Results
